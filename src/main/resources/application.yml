@@ -1,0 +1,9 @@
+#spring.application.name=sample01
+#spring.data.redis.host=localhost
+#spring.data.redis.url=localhost:6379
+#spring.data.redis.port=6379
+spring:
+  data:
+    redis:
+      host: localhost
+      port: 6379

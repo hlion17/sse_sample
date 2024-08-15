@@ -1,0 +1,11 @@
+
+### Repeat message
+< {%
+    import {wait} from "./wait";
+
+    const messageList = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20];
+    request.variables.set("message", messageList);
+    wait(1.5);
+%}
+
+POST http://localhost:8080/event/emitter/test?message={{message}}

@@ -1,14 +1,19 @@
 package org.example.sample01.controller;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.example.sample01.model.EventDTO;
 import org.example.sample01.repository.EmitterRepository;
+import org.example.sample01.repository.RedisEventRepository;
+import org.example.sample01.service.RedisPubSubService;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.io.IOException;
 import java.util.List;
+import java.util.UUID;
 
 @Slf4j
 @RestController
@@ -16,33 +21,27 @@ import java.util.List;
 public class SampleController {
 
     private final EmitterRepository emitterRepository;
+    private final RedisEventRepository redisEventRepository;
+    private final RedisPubSubService redisPubSubService;
 
-    @GetMapping(value = "/event/emitter/connect/{value}", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    public SseEmitter getEmitter(@PathVariable String value) {
-        SseEmitter emitter = new SseEmitter(8 * 60 * 60 * 1000L);
+    private final String CHANEL_NAME = "test";
 
-        emitterRepository.save("test", emitter);
+    @GetMapping(value = "/event/emitter/connect", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public SseEmitter getEmitter(@RequestHeader(value = "Last-Event-ID", required = false) String lastEventId) throws JsonProcessingException {
+
+        log.info("Last-Event-ID: {}", lastEventId);
+
+//        SseEmitter emitter = new SseEmitter(8 * 60 * 60 * 1000L);
+        SseEmitter emitter = new SseEmitter(5000L);
+
+        redisPubSubService.subscribe(CHANEL_NAME);
+
+        this.handleUnconsumedEvent(emitter, lastEventId);
+
+        emitterRepository.save(CHANEL_NAME, emitter);
 
         emitter.onCompletion(() -> {
-            log.info("SSE connection completed successfully.");
-        });
-
-        emitter.onTimeout(() -> {
-            log.error("timeout!!!!");
-            try {
-                emitter.send(SseEmitter.event()
-                                       .name("timeout")
-                                       .data("Connection timed out. Please reconnect."));
-            } catch (IOException e) {
-                log.error("SSE connection timed out: {}", e.getMessage());
-            }
-
-            emitter.complete();
-        });
-
-        emitter.onError((ex) -> {
-            log.error("error!!!! {}", ex.getMessage());
-            emitter.completeWithError(ex);
+            redisPubSubService.removeSubscribe(CHANEL_NAME);
         });
 
         try {
@@ -51,25 +50,39 @@ public class SampleController {
                                    .data("connected")
             );
         } catch (IOException e) {
-            throw new RuntimeException(e);
+            emitter.completeWithError(e);
         }
         return emitter;
     }
 
-    @PostMapping("/event/emitter/{eventKey}")
-    public void sendEvent(@PathVariable("eventKey") String eventKey, @RequestParam String message) {
-        List<SseEmitter> sseEmitters = emitterRepository.get(eventKey);
-
-        for (SseEmitter sseEmitter : sseEmitters) {
+    private void handleUnconsumedEvent(SseEmitter emitter, String lastEventId) throws JsonProcessingException {
+        List<EventDTO> unconsumedEventList = redisEventRepository.getEventAfter(CHANEL_NAME, lastEventId);
+        for (EventDTO eventDTO : unconsumedEventList) {
+            log.info("UnConsumed Event: {}", eventDTO.toString());
             try {
-                sseEmitter.send(SseEmitter.event()
-                                          .name("test")
-                                          .data(message)
+                emitter.send(SseEmitter.event()
+                                       .id(eventDTO.getId())
+                                       .name("testEvent")
+                                       .data(eventDTO.getMessage())
                 );
-            } catch (Exception e) {
-                log.error("Exception occur!!!!!!");
-                emitterRepository.remove(eventKey, sseEmitter);
+            } catch (IOException e) {
+                emitter.completeWithError(e);
             }
         }
+    }
+
+    @PostMapping("/event/emitter/{eventKey}")
+    public void sendEvent(@PathVariable("eventKey") String eventKey, @RequestParam String message) throws JsonProcessingException {
+        EventDTO event = EventDTO.builder()
+                                 .id(UUID.randomUUID().toString())
+                                 .message(message)
+                                 .build();
+        redisEventRepository.saveEvent(eventKey, event);
+        redisPubSubService.publish(eventKey, event);
+    }
+
+    @DeleteMapping("/events/{eventKey}")
+    public void deleteEvent(@PathVariable("eventKey") String eventKey) {
+        redisEventRepository.deleteEvent(eventKey);
     }
 }
